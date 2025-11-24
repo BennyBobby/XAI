@@ -8,3 +8,5 @@ ultralytics==8.3.225
 tensorflow==2.20.0
 pywavelets==1.9.0
 tqdm==4.67.1
+scikit-image==0.25.2
+lime==0.2.0.1
