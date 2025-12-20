@@ -113,7 +113,7 @@ def generate_gradcam_pp_mask_clf(model, input_tensor, target_layer):
     return cam_numpy, target_class_idx
 
 
-def generate_lime_mask_clf(model, img_numpy, num_samples=10000):
+def generate_lime_mask_clf(model, img_numpy, num_samples=1000):
     explainer = lime_image.LimeImageExplainer()
 
     temp_output = batch_predict(img_numpy[np.newaxis, ...], model)

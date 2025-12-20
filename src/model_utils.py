@@ -7,9 +7,10 @@ import requests
 from ultralytics import YOLO
 import cv2
 
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(DEVICE)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(DEVICE)
 
 PREPROCESS_CLF = transforms.Compose(
     [
@@ -18,19 +19,6 @@ PREPROCESS_CLF = transforms.Compose(
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
-
-
-def get_imagenet_class_names():
-    url = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
-    try:
-        class_names = requests.get(url).text.split("\n")
-        return class_names
-    except requests.exceptions.RequestException:
-        print("Avertissement: Impossible de télécharger la liste des classes ImageNet.")
-        return [f"Class {i}" for i in range(1000)]
-
-
-IMAGENET_CLASSES = get_imagenet_class_names()
 
 feature_maps = {}
 gradients = {}
@@ -49,7 +37,9 @@ class ActivationAndGradientExtractor:
         self.activations = None
         self.gradients = None
         self._forward_handle = target_layer.register_forward_hook(self._save_activation)
-        self._backward_handle = target_layer.register_backward_hook(self._save_gradient)
+        self._backward_handle = target_layer.register_full_backward_hook(
+            self._save_gradient
+        )
 
     def _save_activation(self, module, input, output):
         self.activations = output.detach()
@@ -69,13 +59,13 @@ def _find_target_layer(model, target_layer_name):
         if "[" in part:
             name, idx_str = part.split("[")
             idx = int(idx_str[:-1])
-            current_layer = current_layer._modules[name][idx]
+            current_layer = getattr(current_layer, name)[idx]
         else:
-            current_layer = current_layer._modules[part]
+            current_layer = getattr(current_layer, part)
     return current_layer
 
 
-def load_resnet_model(target_layer_name="layer4[-1].conv3"):
+def load_resnet_model(target_layer_name="layer4[2].conv3"):
     model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
     model.to(DEVICE)
     model.eval()
@@ -84,45 +74,45 @@ def load_resnet_model(target_layer_name="layer4[-1].conv3"):
 
 
 def load_yolo_model(model_name="yolov8n.pt", target_layer_index=9):
-    model_yolo = YOLO(model_name).to(DEVICE)
-    model_pt = model_yolo.model.eval()
+    model_yolo = YOLO(model_name)
+    model_pt = model_yolo.model.to(DEVICE).eval()
     try:
         target_layer = model_pt.model[target_layer_index]
     except IndexError:
         print(
-            f"Avertissement: Impossible de trouver la couche cible à l'indice {target_layer_index} dans le modèle YOLO."
+            f"Index {target_layer_index} invalide. Utilisation de la dernière couche."
         )
-        target_layer = None
-
+        target_layer = model_pt.model[-1]
     return model_yolo, model_pt, target_layer
 
 
 def preprocess_yolo_input(image_np, size=640):
     img_resized = cv2.resize(image_np, (size, size))
-    rgb_img = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-
-    input_tensor = torch.from_numpy(rgb_img).float()
-    input_tensor = input_tensor.permute(2, 0, 1).unsqueeze(0).div(255.0)
-
+    input_tensor = (
+        torch.from_numpy(img_resized).float().permute(2, 0, 1).unsqueeze(0).div(255.0)
+    )
     return input_tensor.to(DEVICE)
 
 
 def batch_predict(images, model):
-    tensor_batch = torch.stack(
-        [
-            transforms.ToTensor()(Image.fromarray(image)).to(torch.float32)
-            for image in images
-        ]
-    ).to(DEVICE)
-
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(DEVICE)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(DEVICE)
-
-    normalized_batch = (tensor_batch - mean) / std
-
+    batch = torch.from_numpy(np.array(images)).permute(0, 3, 1, 2).float().to(DEVICE)
+    batch /= 255.0
+    if batch.shape[2:] != (224, 224):
+        batch = torch.nn.functional.interpolate(
+            batch, size=(224, 224), mode="bilinear", align_corners=False
+        )
+    batch = (batch - IMAGENET_MEAN) / IMAGENET_STD
     with torch.no_grad():
-        logits = model(normalized_batch)
+        output = model(batch)
+        if isinstance(output, tuple):
+            output = output[0]
+    return torch.nn.functional.softmax(output, dim=1).cpu().numpy()
 
-    probs = torch.nn.functional.softmax(logits, dim=1).cpu().numpy()
 
-    return probs
+def get_imagenet_class_names():
+    url = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
+    try:
+        class_names = requests.get(url, timeout=5).text.split("\n")
+        return class_names
+    except:
+        return [f"Class {i}" for i in range(1000)]

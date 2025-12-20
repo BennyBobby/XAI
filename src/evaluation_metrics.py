@@ -15,9 +15,7 @@ def get_perturbed_tensor(
         heatmap_np = cv2.resize(heatmap_np, (W, H))
 
     flat_heatmap = heatmap_np.flatten()
-    sorted_indices = np.argsort(flat_heatmap)[
-        ::-1
-    ]  # Du plus important au moins important
+    sorted_indices = np.argsort(flat_heatmap)[::-1]
 
     num_pixels = int(H * W * fraction)
     binary_mask = np.zeros((H * W), dtype=np.float32)
@@ -40,32 +38,56 @@ def get_perturbed_tensor(
     perturbed_img = (
         binary_mask * background + (1.0 - binary_mask) * original_image_np
     ).astype(np.uint8)
-    perturbed_img_pil = Image.fromarray(perturbed_img)
-    return PREPROCESS_CLF(perturbed_img_pil).unsqueeze(0).to(DEVICE)
+    img_pil = Image.fromarray(perturbed_img)
+    return PREPROCESS_CLF(img_pil).unsqueeze(0)
 
 
 def run_xai_metrics(model, original_img_np, heatmap_np, target_class_idx, steps=20):
     percentages = np.linspace(0, 1.0, steps)
-    deletion_scores = []
-    preservation_scores = []
+    list_t_del = []
+    list_t_pres = []
+
+    for fraction in percentages:
+        list_t_del.append(
+            get_perturbed_tensor(original_img_np, heatmap_np, fraction, mode="deletion")
+        )
+        list_t_pres.append(
+            get_perturbed_tensor(
+                original_img_np, heatmap_np, fraction, mode="preservation"
+            )
+        )
+
+    batch_del = torch.cat(list_t_del, dim=0).to(DEVICE)
+    batch_pres = torch.cat(list_t_pres, dim=0).to(DEVICE)
 
     model.eval()
     with torch.no_grad():
-        for fraction in percentages:
-            # Délétion
-            t_del = get_perturbed_tensor(
-                original_img_np, heatmap_np, fraction, mode="deletion"
+        output_del = model(batch_del)
+        output_pres = model(batch_pres)
+
+        if isinstance(output_del, tuple):
+            output_del = output_del[0]
+        if isinstance(output_pres, tuple):
+            output_pres = output_pres[0]
+
+        if output_del.dim() == 3 and output_del.shape[1] > 10:
+            class_idx_in_yolo = 4 + target_class_idx
+            idx = min(class_idx_in_yolo, output_del.shape[1] - 1)
+            del_scores = (
+                torch.sigmoid(output_del[:, idx, :]).max(dim=1)[0].cpu().numpy()
             )
-            out_del = torch.softmax(model(t_del), dim=1)
-            deletion_scores.append(out_del[0, target_class_idx].item())
-            # Préservation
-            t_pres = get_perturbed_tensor(
-                original_img_np, heatmap_np, fraction, mode="preservation"
+            pres_scores = (
+                torch.sigmoid(output_pres[:, idx, :]).max(dim=1)[0].cpu().numpy()
             )
-            out_pres = torch.softmax(model(t_pres), dim=1)
-            preservation_scores.append(out_pres[0, target_class_idx].item())
+        else:
+            del_scores = (
+                torch.softmax(output_del, dim=1)[:, target_class_idx].cpu().numpy()
+            )
+            pres_scores = (
+                torch.softmax(output_pres, dim=1)[:, target_class_idx].cpu().numpy()
+            )
 
     return {
-        "auc_del": auc(percentages, deletion_scores),
-        "auc_pres": auc(percentages, preservation_scores),
+        "auc_del": auc(percentages, del_scores),
+        "auc_pres": auc(percentages, pres_scores),
     }
