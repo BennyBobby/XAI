@@ -2,122 +2,131 @@ import os
 import pandas as pd
 import numpy as np
 from PIL import Image
-import cv2
 import torch
 from tqdm import tqdm
-
+import cv2
 
 from src.model_utils import (
     load_resnet_model,
     load_yolo_model,
-    get_imagenet_class_names,
     PREPROCESS_CLF,
     DEVICE,
 )
 from src.xai_methods import (
     generate_gradcam_mask_clf,
     generate_gradcam_pp_mask_clf,
+    generate_lime_mask_clf,
     generate_yolo_gradcam,
+    generate_yolo_gradcam_pp,
 )
-from src.evaluation_metrics import run_deletion_test, run_preservation_test
 
-DATA_DIR = "data\images"
+from src.evaluation_metrics import run_xai_metrics
+
+DATA_DIR = "data/images"
 OUTPUT_FILE = "results/xai_comparison_results.csv"
-METHODS = {
-    "GradCAM": generate_gradcam_mask_clf,
-    "GradCAMPP": generate_gradcam_pp_mask_clf,
-}
-MODELS = ["ResNet50"]
 
 
 def load_images(data_dir):
-    image_paths = [
-        os.path.join(data_dir, f)
+    if not os.path.exists(data_dir):
+        print(f"Erreur : Le dossier {data_dir} n'existe pas.")
+        return []
+    return [
+        {
+            "path": os.path.join(data_dir, f),
+            "name": f,
+            "np_array": np.array(Image.open(os.path.join(data_dir, f)).convert("RGB")),
+        }
         for f in os.listdir(data_dir)
         if f.endswith((".jpg", ".png", ".jpeg"))
     ]
-    images = []
-    print(f"Loading {len(image_paths)} images...")
-    for path in image_paths:
-        try:
-            img_pil = Image.open(path).convert("RGB")
-            img_np = np.array(img_pil)
-            images.append(
-                {
-                    "path": path,
-                    "name": os.path.basename(path),
-                    "np_array": img_np,
-                }
-            )
-        except Exception as e:
-            print(f"Error loading {path}: {e}")
-    return images
 
 
 def main_evaluation():
-
     results_list = []
 
-    model_clf, target_layer_clf = load_resnet_model()
+    # 1. Chargement des modèles
+    model_resnet, layer_resnet = load_resnet_model()
+    model_yolo, model_yolo_pt, layer_yolo = (
+        load_yolo_model()
+    )  # Supposant que load_yolo_model renvoie les 3
 
     images_data = load_images(DATA_DIR)
 
-    for image_data in tqdm(images_data, desc="Processing Images"):
-
+    for image_data in tqdm(images_data, desc="Évaluation XAI"):
         img_np = image_data["np_array"]
         img_name = image_data["name"]
 
-        input_tensor_clf = (
-            PREPROCESS_CLF(Image.fromarray(img_np)).unsqueeze(0).to(DEVICE)
-        )
+        # --- PARTIE A : CLASSIFICATION (ResNet50) ---
+        input_clf = PREPROCESS_CLF(Image.fromarray(img_np)).unsqueeze(0).to(DEVICE)
         with torch.no_grad():
-            output = model_clf(input_tensor_clf)
-            target_class_idx = output.argmax(dim=1).item()
+            target_clf = model_resnet(input_clf).argmax(dim=1).item()
 
-        for method_name, method_func in METHODS.items():
+        methods_clf = {
+            "GradCAM": lambda: generate_gradcam_mask_clf(
+                model_resnet, input_clf, layer_resnet
+            ),
+            "GradCAMPP": lambda: generate_gradcam_pp_mask_clf(
+                model_resnet, input_clf, layer_resnet
+            ),
+            "LIME": lambda: generate_lime_mask_clf(model_resnet, img_np),
+        }
+
+        for name, func in methods_clf.items():
             try:
-                if method_name in ["GradCAM", "GradCAMPP"]:
-                    heatmap_mask, _ = method_func(
-                        model_clf, input_tensor_clf, target_layer_clf
-                    )
-
-                _, _, deletion_auc = run_deletion_test(
-                    model_clf, img_np, heatmap_mask, target_class_idx
-                )
-
-                _, _, preservation_auc = run_preservation_test(
-                    model_clf, img_np, heatmap_mask, target_class_idx
-                )
-
+                heatmap, _ = func()
+                m = run_xai_metrics(model_resnet, img_np, heatmap, target_clf)
                 results_list.append(
                     {
                         "Model": "ResNet50",
-                        "Method": method_name,
+                        "Task": "Classification",
+                        "Method": name,
                         "Image": img_name,
-                        "Target_Class": target_class_idx,
-                        "Deletion_AOC": deletion_auc,
-                        "Preservation_AOC": preservation_auc,
+                        "AUC_Del": m["auc_del"],
+                        "AUC_Pres": m["auc_pres"],
+                        "Fidelity": (1 - m["auc_del"]) + m["auc_pres"],
                     }
                 )
-
             except Exception as e:
-                print(f"Error for {method_name} on {img_name}: {e}")
-                results_list.append(
-                    {
-                        "Model": "ResNet50",
-                        "Method": method_name,
-                        "Image": img_name,
-                        "Target_Class": target_class_idx,
-                        "Deletion_AOC": np.nan,
-                        "Preservation_AOC": np.nan,
-                    }
-                )
+                print(f"Erreur Clf {name}: {e}")
 
-    df_results = pd.DataFrame(results_list)
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-    df_results.to_csv(OUTPUT_FILE, index=False)
-    print(f"Résultats sauvegardés dans : {OUTPUT_FILE}")
-    print(df_results.head())
+        # --- PARTIE B : DÉTECTION (YOLO) ---
+        # Note: YOLO utilise souvent BGR via OpenCV en interne dans certains wrappers
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+        methods_yolo = {
+            "YOLO_GradCAM": lambda: generate_yolo_gradcam(
+                model_yolo, model_yolo_pt, img_bgr, layer_yolo
+            ),
+            "YOLO_GradCAMPP": lambda: generate_yolo_gradcam_pp(
+                model_yolo, model_yolo_pt, img_bgr, layer_yolo
+            ),
+        }
+
+        for name, func in methods_yolo.items():
+            try:
+                heatmap, target_idx, bbox, names = func()
+                if target_idx is not None:
+                    # Pour YOLO, on passe par un wrapper ou on adapte run_xai_metrics
+                    # Ici, on utilise le score de confiance de la boîte comme métrique
+                    m = run_xai_metrics(model_yolo_pt, img_np, heatmap, target_idx)
+                    results_list.append(
+                        {
+                            "Model": "YOLO",
+                            "Task": "Detection",
+                            "Method": name,
+                            "Image": img_name,
+                            "AUC_Del": m["auc_del"],
+                            "AUC_Pres": m["auc_pres"],
+                            "Fidelity": (1 - m["auc_del"]) + m["auc_pres"],
+                        }
+                    )
+            except Exception as e:
+                print(f"Erreur Yolo {name}: {e}")
+
+    # Sauvegarde
+    df = pd.DataFrame(results_list)
+    df.to_csv(OUTPUT_FILE, index=False)
+    print(f"Terminé. Résultats sauvegardés dans {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

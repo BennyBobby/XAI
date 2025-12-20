@@ -7,8 +7,17 @@ import requests
 from ultralytics import YOLO
 import cv2
 
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Device set to: {DEVICE}")
+
+
+PREPROCESS_CLF = transforms.Compose(
+    [
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+)
 
 
 def get_imagenet_class_names():
@@ -86,15 +95,6 @@ def load_yolo_model(model_name="yolov8n.pt", target_layer_index=9):
         target_layer = None
 
     return model_yolo, model_pt, target_layer
-
-
-PREPROCESS_CLF = transforms.Compose(
-    [
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
-)
 
 
 def preprocess_yolo_input(image_np, size=640):
