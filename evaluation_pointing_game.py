@@ -8,7 +8,7 @@ from src.model_utils import load_yolo_model
 from src.xai_methods import generate_yolo_gradcam, generate_yolo_gradcam_pp
 
 IMAGE_DIRECTORY = r"data\VOC2012_test\JPEGImages"
-METHOD_NAME = "Grad-CAM++"  # "Grad-CAM" ou "Grad-CAM++"
+METHOD_NAME = "Grad-CAM"  # "Grad-CAM" ou "Grad-CAM++"
 TASK_DOMAIN = "Object Detection"
 OUTPUT_DIR = "evaluation_result"
 MODEL_PATH = "yolov8n.pt"
@@ -43,7 +43,7 @@ def benchmark_pointing_game():
     ]
     results = []
 
-    print(f"\n🚀 Lancement du Benchmark sur {DEVICE}")
+    print(f"\nLancement du Benchmark sur {DEVICE}")
     print(f"Méthode choisie : {METHOD_NAME}")
 
     for img_name in tqdm(img_list):
@@ -87,7 +87,7 @@ def benchmark_pointing_game():
     df.to_csv(output_csv, index=False)
 
     accuracy = df["hit"].mean() * 100
-    print(f"\n✅ Terminé ! Précision {METHOD_NAME} : {accuracy:.2f}%")
+    print(f"\nTerminé ! Précision {METHOD_NAME} : {accuracy:.2f}%")
 
 
 if __name__ == "__main__":
