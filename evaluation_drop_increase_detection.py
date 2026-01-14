@@ -22,9 +22,6 @@ def get_yolo_confidence(model_pt, img_tensor, target_class):
     with torch.no_grad():
         outputs = model_pt(img_tensor)
         preds = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
-
-        # Les scores de classes commencent à l'index 4
-        # On applique sigmoid car YOLOv8 n'utilise pas softmax en sortie de détection
         class_scores = torch.sigmoid(preds[0, 4 + target_class, :])
 
         return torch.max(class_scores).item()
@@ -43,7 +40,7 @@ def run_faithfulness_benchmark():
     ]
     results = []
 
-    print(f"🚀 Évaluation de la fidélité ({METHOD_NAME}) sur {DEVICE}")
+    print(f"Évaluation de la fidélité ({METHOD_NAME}) sur {DEVICE}")
 
     pbar = tqdm(img_list, desc="Analyse")
     for img_name in pbar:
@@ -89,7 +86,7 @@ def run_faithfulness_benchmark():
                 s_pres = get_yolo_confidence(model_pt, img_t * mask_t, target_idx)
 
                 # Calcul des métriques
-                # Drop % : Chute de confiance quand on supprime l'explication
+                # Drop %
                 drop_percent = max(0, s_orig - s_del) / (s_orig + 1e-8) * 100
 
                 # Increase % : Confiance conservée/augmentée avec juste l'explication (Voulu : 1)

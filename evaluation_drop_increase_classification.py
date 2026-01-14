@@ -17,6 +17,11 @@ THRESHOLD = 0.8
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def get_prob(it, model, target_class):
+    output = model(it)
+    return torch.softmax(output, dim=1)[0, target_class].item()
+
+
 def run_resnet_faithfulness():
 
     model = (
@@ -58,13 +63,9 @@ def run_resnet_faithfulness():
 
         with torch.no_grad():
 
-            def get_prob(it):
-                output = model(it)
-                return torch.softmax(output, dim=1)[0, target_class].item()
-
-            p_orig = get_prob(img_tensor)
-            p_del = get_prob(img_tensor * (1 - mask_t))
-            p_pres = get_prob(img_tensor * mask_t)
+            p_orig = get_prob(img_tensor, model, target_class)
+            p_del = get_prob(img_tensor * (1 - mask_t), model, target_class)
+            p_pres = get_prob(img_tensor * mask_t, model, target_class)
 
         drop = max(0, p_orig - p_del) / (p_orig + 1e-8) * 100
         increase = 1 if p_pres > p_orig else 0

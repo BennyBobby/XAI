@@ -87,7 +87,7 @@ def benchmark_pointing_game():
     df.to_csv(output_csv, index=False)
 
     accuracy = df["hit"].mean() * 100
-    print(f"\nTerminé ! Précision {METHOD_NAME} : {accuracy:.2f}%")
+    print(f"\nPrécision {METHOD_NAME} : {accuracy:.2f}%")
 
 
 if __name__ == "__main__":
